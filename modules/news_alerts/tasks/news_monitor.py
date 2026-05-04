@@ -6,11 +6,13 @@ from modules.trading.tools.realtime import get_stock_price, get_crypto_price
 from modules.trading.nifty500 import NIFTY500_MAP
 from ai_client import ask_ai
 from telegram.ext import ContextTypes
+import os
+import re
 
 watchlists_file = 'data/watchlists.json'
 prices_file = 'data/user_prices.json'
 
-dedup_set = set()  # Global dedup (simple)
+dedup_news = set()  # snippet hashes, clear daily
 
 def load_data():
     watchlists = {}
@@ -43,36 +45,52 @@ def get_symbol(ticker_str):
     return ticker_str  # Assume direct symbol
 
 async def proactive_news(chat_id, context: ContextTypes.DEFAULT_TYPE, user_id: str):
+    dedup_news = set()  # snippet hashes, clear daily
     while True:
         try:
             watchlists, prices = load_data()
             user_watch = watchlists.get(user_id, {}).get('watch', [])
-            user_alerts = watchlists.get(user_id, {}).get('alerts', ['deals'])
+            user_alerts = watchlists.get(user_id, {}).get('alerts', ['ipl', 'tennis', 'f1'])
 
             # Price alerts for watchlist (>2% change)
             user_prices = prices.get(user_id, {})
             for item in user_watch:
                 symbol = get_symbol(item)
                 if symbol:
-                    curr_price = float(get_stock_price(symbol).split('₹')[-1].replace(',', '')) if '.NS' in symbol else float(get_crypto_price(symbol.split('-')[0]).split('$')[-1])
-                    last_price = user_prices.get(item, curr_price)
-                    change_pct = abs((curr_price - last_price) / last_price * 100) if last_price else 0
-                    if change_pct > 2:
-                        msg = f"📈 {symbol}: {curr_price:.2f} ({change_pct:.1f}% {'↑' if curr_price > last_price else '↓'} )"
-                        await context.bot.send_message(chat_id=chat_id, text=msg)
-                        user_prices[item] = curr_price
+                    try:
+                        if '.NS' in symbol or symbol.startswith('^NSE'):
+                            price_str = get_stock_price(symbol)
+                            curr_price = float(price_str.split()[-1].replace(',', '').replace('₹', ''))
+                        else:
+                            price_str = get_crypto_price(symbol.split('-')[0]) if '-USD' in symbol else get_stock_price(symbol)
+                            curr_price = float(price_str.split('$')[-1].replace(',', ''))
+                        last_price = user_prices.get(item, curr_price)
+                        change_pct = abs((curr_price - last_price) / last_price * 100) if last_price else 0
+                        if change_pct > 2:
+                            msg = f"📈 {symbol}: {curr_price:.2f} ({change_pct:.1f}% {'↑' if curr_price > last_price else '↓'} )"
+                            await context.bot.send_message(chat_id=chat_id, text=msg)
+                            user_prices[item] = curr_price
+                    except:
+                        pass
 
-            # News alerts
+            # News alerts (Breaking focus, dedup)
+            now_str = datetime.now().strftime('%Y-%m-%d')
+            if now_str not in dedup_news:  # Daily reset
+                dedup_news.clear()
             for interest in user_alerts:
-                news = get_news(f"{interest} latest india", timelimit='h')
-                if news:
-                    # LLM filter
-                    filter_prompt = f"Is this relevant to '{interest}'? Yes/No + reason: {news[:1000]}"
-                    relevant = ask_ai(filter_prompt).startswith('Yes')
-                    if relevant and interest not in dedup_set:
-                        msg = f"🚨 {interest.upper()}: {news[:400]}"
+                query = f"{interest} live OR result OR breaking OR score OR update india"
+                news = get_news(query, timelimit='h')
+                web = search_web(query)
+                full_news = (news or '') + '\n' + (web or '')
+                if full_news.strip():
+                    snippet_str = full_news[:300].strip()
+                    snippet_hash = hash(snippet_str)
+                    filter_prompt = f"Relevant breaking news for '{interest}'? Yes/No: {full_news[:800]}"
+                    relevant = 'yes' in ask_ai(filter_prompt).lower()
+                    if relevant and snippet_hash not in dedup_news:
+                        msg = f"🚨 BREAKING {interest.upper()}: {full_news[:500]}"
                         await context.bot.send_message(chat_id=chat_id, text=msg)
-                        dedup_set.add(interest)
+                        dedup_news.add(snippet_hash)
 
             save_prices({user_id: user_prices})
         except Exception as e:

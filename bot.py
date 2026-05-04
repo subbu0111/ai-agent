@@ -28,23 +28,6 @@ def safe_reply(text):
     return text
 
 
-import json
-import os
-from modules.news_alerts.tasks.news_monitor import proactive_news, start_proactive
-
-proactive_tasks = {}  # user_id: task
-watchlists_file = 'data/watchlists.json'
-
-def load_watchlists():
-    if os.path.exists(watchlists_file):
-        with open(watchlists_file, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_watchlists(data):
-    with open(watchlists_file, 'w') as f:
-        json.dump(data, f)
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_access(update):
         return
@@ -53,49 +36,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = text_lower
     print("Incoming:", text)
 
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    # 🆕 MODULAR ROUTER + PROACTIVE
-    watchlists = load_watchlists()
-
-    if text_lower.startswith('start alerts'):
-        interests = text_lower.replace('start alerts', '').strip().split() or ['deals', 'news']
-        watchlists[str(user_id)] = {'alerts': interests}
-        save_watchlists(watchlists)
-        task = asyncio.create_task(proactive_news(chat_id, context, interests))
-        proactive_tasks[str(user_id)] = task
-        await update.message.reply_text(f"🚨 Proactive alerts started for: {', '.join(interests)}")
-        return
-
-    if text_lower.startswith('watch '):
-        items = text_lower.replace('watch ', '').strip().split()
-        if str(user_id) not in watchlists:
-            watchlists[str(user_id)] = {}
-        watchlists[str(user_id)]['watch'] = items
-        save_watchlists(watchlists)
-        await update.message.reply_text(f"👀 Watchlist: {', '.join(items)}")
-        return
-
-    if text_lower.startswith('stop alerts'):
-        if str(user_id) in proactive_tasks:
-            proactive_tasks[str(user_id)].cancel()
-            del proactive_tasks[str(user_id)]
-        await update.message.reply_text("🛑 Alerts stopped.")
-        return
-
-    # Route modules
-    if any(kw in text_lower for kw in ['stock', 'nifty', 'chart', 'price', 'alert', 'track', 'btc', 'nasdaq']):
-        # Trading module (existing logic follows)
+    # Route trading/manual
+    if any(kw in text_lower for kw in ['stock', 'nifty', 'chart', 'price', 'btc', 'nasdaq']):
+        # Trading logic follows
         pass
     elif any(kw in text_lower for kw in ['news', 'deal', 'breaking']):
         from modules.trading.tools.search import get_news
         news = get_news(text_lower.replace('news ', ''), timelimit='d')
         await update.message.reply_text(news or "No recent news.")
         return
-    else:
-        # General: always LLM + search
-        pass
 
     # ⚙️ RUN COMMAND
     if text.startswith("alert "):
@@ -147,12 +96,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📡 Tracking {asset}")
         return
 
-    # 🧠 JARVIS Natural AI w/ Memory
-    await update.message.reply_text("🤖 Sky thinking... 😊")
-    text_lower = update.message.text.lower()
-    if any(g in text_lower for g in ['hello', 'hi', 'hey', 'good morning', 'good evening']):
-        await update.message.reply_text("Hey! 👋 Sky here, your stock/crypto buddy. Ask about prices, deals, charts, or track assets! 🚀")
-        return
+    # 🧠 Smart GPT: Always LLM + search
+    await update.message.reply_text("🤖 Thinking...")
+
 
     # 📊 CHARTS
     if any(word in text_lower for word in ['chart', 'graph', 'plot']):
@@ -292,14 +238,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(safe_reply(result))
 
 
+print("🚀 Reactive Smart GPT Bot READY!")
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(MessageHandler(filters.VOICE, handle_voice))  # Voice stub
+app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_access(update):
-        return
-    await update.message.reply_text("🔊 Voice received! Transcription coming soon (add WHISPER_KEY). 📝")
-
-print("🚀 ELITE BOT w/ Voice/Alerts/UI READY!")
 app.run_polling()
